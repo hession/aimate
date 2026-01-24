@@ -89,10 +89,9 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Temporarily modify config path
-	originalHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
-	defer os.Setenv("HOME", originalHome)
+	// Set config directory for test
+	configTestDir := filepath.Join(tmpDir, "config")
+	SetConfigDir(configTestDir)
 
 	// Create and save config
 	cfg := DefaultConfig()
@@ -104,7 +103,7 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 
 	// Verify file exists
-	configPath := filepath.Join(tmpDir, ".aimate", "config.yaml")
+	configPath := filepath.Join(configTestDir, "config.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		t.Fatal("Config file not created")
 	}

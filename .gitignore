@@ -37,6 +37,8 @@ config/.secrets
 
 # Log files
 *.log
+logs/
+config/logs/
 
 # Environment files
 .env

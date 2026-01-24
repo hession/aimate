@@ -23,8 +23,14 @@ Make sure you have Go 1.23+ installed:
 git clone https://github.com/hession/aimate.git
 cd aimate
 
-# Build
-go build -o bin/aimate ./cmd/aimate
+# Build using script
+./build.sh
+
+# Or build with specific options
+./build.sh -d          # Build with debug symbols
+./build.sh -r          # Build for release (optimized)
+./build.sh -c          # Clean before build
+./build.sh -a          # Build for all platforms (linux, darwin, windows)
 
 # Install to system path (optional)
 sudo mv bin/aimate /usr/local/bin/
@@ -58,8 +64,18 @@ model:
 ### 2. Start Chatting
 
 ```bash
-$ aimate
+# Run directly (development mode)
+./cli.sh
 
+# Or run with options
+./cli.sh -d                 # Run with debug logging
+./cli.sh -c ./myconfig      # Use custom config directory
+./cli.sh -b -e              # Build first, then run binary
+./cli.sh -- --help          # Pass args to aimate
+```
+
+Example session:
+```
 🤖 AIMate v0.1.0 - Your AI Work Companion
 Type /help for help, /exit to quit
 
@@ -94,6 +110,44 @@ prompts:
     system: |
       You are AIMate, an intelligent AI work companion...
 ```
+
+## 🛠️ Scripts
+
+### `build.sh` - Build Script
+
+```bash
+./build.sh              # Build for current platform
+./build.sh -d           # Build with debug symbols
+./build.sh -r           # Build for release (optimized, smaller binary)
+./build.sh -c           # Clean build directory before build
+./build.sh -a           # Build for all platforms (darwin/linux/windows)
+./build.sh -o myname    # Custom output binary name
+./build.sh -h           # Show help
+```
+
+Features:
+- Automatically runs tests before building
+- Injects version info (git tag, commit, build time)
+- Supports cross-compilation for multiple platforms
+- Outputs to `bin/` directory
+
+### `cli.sh` - Run Script
+
+```bash
+./cli.sh                # Run with go run (development)
+./cli.sh -e             # Run the built binary from bin/
+./cli.sh -b -e          # Build first, then run binary
+./cli.sh -d             # Run with debug logging enabled
+./cli.sh -c ./cfg       # Use custom config directory
+./cli.sh -- --help      # Pass arguments to aimate
+./cli.sh -h             # Show help
+```
+
+Features:
+- Quick development mode with `go run`
+- Option to run compiled binary
+- Debug mode support
+- Custom config directory support
 
 ## 📚 Built-in Commands
 
@@ -155,8 +209,12 @@ aimate/
 │   ├── cli/             # CLI interface
 │   ├── config/          # Configuration management
 │   ├── llm/             # LLM client
+│   ├── logger/          # Logging system
 │   ├── memory/          # Memory storage system
 │   └── tools/           # Tool system
+├── logs/                # Log files (auto-created)
+├── build.sh             # Build script
+├── cli.sh               # Run script
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -184,50 +242,6 @@ memory:
 safety:
   confirm_dangerous_ops: true          # Confirm dangerous operations
 ```
-
-### Secrets (`config/.secrets`)
-
-```
-DEEPSEEK_API_KEY=your-api-key-here
-```
-
-### Prompts (`config/prompt.yaml`)
-
-```yaml
-language: zh  # or "en" for English
-
-prompts:
-  zh:
-    system: "..."
-    memory_context: "以下是你之前记住的相关信息："
-    error_prefix: "错误"
-  en:
-    system: "..."
-    memory_context: "Here is the relevant information you remembered earlier:"
-    error_prefix: "Error"
-```
-
-## 🧪 Run Tests
-
-```bash
-go test ./...
-```
-
-## 📝 Version History
-
-### v0.1.0 (MVP)
-
-- ✅ Basic conversation (DeepSeek integration)
-- ✅ Agent framework (custom, with tool calling)
-- ✅ 5 core tools (read_file, write_file, list_dir, run_command, search_files)
-- ✅ Local memory system (SQLite)
-- ✅ CLI interface
-- ✅ Configurable prompts (Chinese/English)
-- ✅ Secrets management
-
-## 🤝 Contributing
-
-Issues and Pull Requests are welcome!
 
 ## 📄 License
 

@@ -1,14 +1,16 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
+	"github.com/chzyer/readline"
 	"github.com/hession/aimate/internal/agent"
 	"github.com/hession/aimate/internal/config"
 	"github.com/hession/aimate/internal/llm"
@@ -67,22 +69,28 @@ func Run(cfg *config.Config) error {
 	}
 
 	// Start REPL
-	return runREPL(ag)
+	return runREPL(ag, cfg)
 }
 
 // printWelcome prints welcome message
 func printWelcome() {
 	fmt.Printf("\n%s🤖 AIMate v%s%s - Your AI Work Companion\n", colorCyan, Version, colorReset)
-	fmt.Printf("%sType /help for help, /exit to quit%s\n\n", colorGray, colorReset)
+	fmt.Printf("%sType /help for help, /exit to quit%s\n", colorGray, colorReset)
+	fmt.Printf("%sFor multi-line input: enter text, then press Enter twice to submit%s\n\n", colorGray, colorReset)
 }
 
 // promptAPIKey prompts user to configure API Key
 func promptAPIKey(cfg *config.Config) error {
 	fmt.Printf("%s⚠️  API Key not configured%s\n\n", colorYellow, colorReset)
-	fmt.Printf("Please enter your DeepSeek API Key: ")
 
-	reader := bufio.NewReader(os.Stdin)
-	apiKey, err := reader.ReadString('\n')
+	// Create readline instance for API key input
+	rl, err := readline.New("Please enter your DeepSeek API Key: ")
+	if err != nil {
+		return fmt.Errorf("failed to create readline: %w", err)
+	}
+	defer rl.Close()
+
+	apiKey, err := rl.Readline()
 	if err != nil {
 		return fmt.Errorf("failed to read input: %w", err)
 	}
@@ -103,9 +111,42 @@ func promptAPIKey(cfg *config.Config) error {
 	return Run(cfg)
 }
 
-// runREPL runs the interactive REPL
-func runREPL(ag *agent.Agent) error {
-	reader := bufio.NewReader(os.Stdin)
+// getHistoryFilePath returns the history file path
+func getHistoryFilePath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	historyDir := filepath.Join(homeDir, ".aimate")
+	if err := os.MkdirAll(historyDir, 0755); err != nil {
+		return ""
+	}
+	return filepath.Join(historyDir, "history")
+}
+
+// runREPL runs the interactive REPL with readline support
+func runREPL(ag *agent.Agent, cfg *config.Config) error {
+	// Configure readline
+	rlConfig := &readline.Config{
+		Prompt:          fmt.Sprintf("%sYou: %s", colorGreen, colorReset),
+		HistoryFile:     getHistoryFilePath(),
+		HistoryLimit:    1000,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+
+		// Enable VIM mode (optional, can be removed)
+		// VimMode:          false,
+
+		HistorySearchFold:      true,
+		DisableAutoSaveHistory: false,
+	}
+
+	rl, err := readline.NewEx(rlConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create readline: %w", err)
+	}
+	defer rl.Close()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -116,48 +157,124 @@ func runREPL(ag *agent.Agent) error {
 		<-sigChan
 		fmt.Printf("\n\n%sGoodbye! 👋%s\n", colorCyan, colorReset)
 		cancel()
+		rl.Close()
 		os.Exit(0)
 	}()
 
-	for {
-		// Display prompt
-		fmt.Printf("%sYou: %s", colorGreen, colorReset)
+	// Multi-line input mode
+	var multiLineBuffer strings.Builder
+	inMultiLine := false
 
-		// Read user input
-		input, err := reader.ReadString('\n')
+	for {
+		// Set prompt based on mode
+		if inMultiLine {
+			rl.SetPrompt(fmt.Sprintf("%s...  %s", colorGray, colorReset))
+		} else {
+			rl.SetPrompt(fmt.Sprintf("%sYou: %s", colorGreen, colorReset))
+		}
+
+		// Read user input with readline (supports backspace, arrow keys, history)
+		line, err := rl.Readline()
 		if err != nil {
+			if err == readline.ErrInterrupt {
+				if inMultiLine {
+					// Cancel multi-line mode
+					multiLineBuffer.Reset()
+					inMultiLine = false
+					fmt.Println()
+					continue
+				}
+				// Ctrl+C pressed, ask for confirmation
+				fmt.Printf("\n%sPress Ctrl+C again or type /exit to quit%s\n", colorYellow, colorReset)
+				continue
+			}
+			if err == io.EOF {
+				fmt.Printf("\n%sGoodbye! 👋%s\n", colorCyan, colorReset)
+				return nil
+			}
 			return fmt.Errorf("failed to read input: %w", err)
 		}
 
-		input = strings.TrimSpace(input)
+		// Handle multi-line input
+		if inMultiLine {
+			if line == "" {
+				// Empty line ends multi-line input
+				inMultiLine = false
+				input := strings.TrimSpace(multiLineBuffer.String())
+				multiLineBuffer.Reset()
+
+				if input == "" {
+					continue
+				}
+
+				// Process the input
+				if err := processInput(ctx, ag, input); err != nil {
+					return err
+				}
+				continue
+			}
+			// Add line to buffer
+			multiLineBuffer.WriteString(line)
+			multiLineBuffer.WriteString("\n")
+			continue
+		}
+
+		// Single line mode
+		input := strings.TrimSpace(line)
 		if input == "" {
+			continue
+		}
+
+		// Check if starting multi-line mode (ends with backslash or is a special command)
+		if strings.HasSuffix(input, "\\") {
+			// Start multi-line mode
+			inMultiLine = true
+			multiLineBuffer.WriteString(strings.TrimSuffix(input, "\\"))
+			multiLineBuffer.WriteString("\n")
+			fmt.Printf("%s(Multi-line mode: press Enter twice to submit, Ctrl+C to cancel)%s\n", colorGray, colorReset)
 			continue
 		}
 
 		// Handle built-in commands
 		if strings.HasPrefix(input, "/") {
-			if handleCommand(input, ag) {
+			if handleCommand(input, ag, rl) {
 				continue
 			}
 			return nil // /exit command
 		}
 
-		// Call Agent to process
-		fmt.Printf("\n%sAIMate: %s", colorBlue, colorReset)
-
-		_, err = ag.Chat(ctx, input)
-		if err != nil {
-			fmt.Printf("\n%s❌ Error: %v%s\n", colorRed, err, colorReset)
+		// Process the input
+		if err := processInput(ctx, ag, input); err != nil {
+			return err
 		}
-
-		fmt.Println()
-		fmt.Println()
 	}
 }
 
+// processInput processes user input and calls agent
+func processInput(ctx context.Context, ag *agent.Agent, input string) error {
+	// Call Agent to process
+	fmt.Printf("\n%sAIMate: %s", colorBlue, colorReset)
+
+	_, err := ag.Chat(ctx, input)
+	if err != nil {
+		fmt.Printf("\n%s❌ Error: %v%s\n", colorRed, err, colorReset)
+	}
+
+	fmt.Println()
+	fmt.Println()
+	return nil
+}
+
 // handleCommand handles built-in commands, returns true to continue loop, false to exit
-func handleCommand(cmd string, ag *agent.Agent) bool {
-	switch strings.ToLower(cmd) {
+func handleCommand(cmd string, ag *agent.Agent, rl *readline.Instance) bool {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return true
+	}
+
+	command := strings.ToLower(parts[0])
+
+	switch command {
 	case "/help":
 		printHelp()
 		return true
@@ -191,6 +308,23 @@ func handleCommand(cmd string, ag *agent.Agent) bool {
 		}
 		return true
 
+	case "/history":
+		// Clear command history
+		if len(parts) > 1 && parts[1] == "clear" {
+			historyFile := getHistoryFilePath()
+			if historyFile != "" {
+				if err := os.WriteFile(historyFile, []byte{}, 0644); err != nil {
+					fmt.Printf("%s❌ Failed to clear history: %v%s\n", colorRed, err, colorReset)
+				} else {
+					fmt.Printf("%s✅ Command history cleared%s\n", colorGreen, colorReset)
+				}
+			}
+		} else {
+			fmt.Printf("%sUse Up/Down arrow keys to browse command history%s\n", colorGray, colorReset)
+			fmt.Printf("%sUse /history clear to clear history%s\n", colorGray, colorReset)
+		}
+		return true
+
 	default:
 		fmt.Printf("%s❓ Unknown command: %s%s\n", colorYellow, cmd, colorReset)
 		fmt.Println("Type /help for available commands")
@@ -204,11 +338,24 @@ func printHelp() {
 %s📚 AIMate Help%s
 
 %sBuilt-in Commands:%s
-  /help    - Show this help message
-  /clear   - Clear current session history
-  /new     - Create new session
-  /config  - Show current configuration
-  /exit    - Exit program
+  /help           - Show this help message
+  /clear          - Clear current session history
+  /new            - Create new session
+  /config         - Show current configuration
+  /history        - Show history usage tips
+  /history clear  - Clear command history
+  /exit           - Exit program
+
+%sInput Tips:%s
+  • Use Backspace to delete characters
+  • Use Left/Right arrow keys to move cursor
+  • Use Up/Down arrow keys to browse command history
+  • Use Ctrl+A/Ctrl+E to jump to start/end of line
+  • Use Ctrl+W to delete word before cursor
+  • Use Ctrl+U to delete line before cursor
+  • End line with \ for multi-line input
+  • Press Enter twice to submit in multi-line mode
+  • Press Ctrl+C to cancel current input
 
 %sAvailable Tools:%s
   • read_file    - Read file content
@@ -223,7 +370,7 @@ func printHelp() {
   "Remember that my project uses Go"
   "Create a file hello.txt with content Hello World"
 
-`, colorCyan, colorReset, colorYellow, colorReset, colorYellow, colorReset, colorYellow, colorReset)
+`, colorCyan, colorReset, colorYellow, colorReset, colorYellow, colorReset, colorYellow, colorReset, colorYellow, colorReset)
 }
 
 // streamOutput handles stream output
@@ -254,10 +401,14 @@ func toolCallOutput(name string, args map[string]any, result string, err error) 
 func confirmDangerousOp(command string) bool {
 	fmt.Printf("\n%s⚠️  Dangerous Operation Warning%s\n", colorRed, colorReset)
 	fmt.Printf("About to execute: %s\n", command)
-	fmt.Printf("Confirm execution? (y/N): ")
 
-	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
+	rl, err := readline.New("Confirm execution? (y/N): ")
+	if err != nil {
+		return false
+	}
+	defer rl.Close()
+
+	input, err := rl.Readline()
 	if err != nil {
 		return false
 	}

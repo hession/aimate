@@ -21,16 +21,6 @@ func NewSecrets() *Secrets {
 
 // SecretsPath returns the secrets file path
 func SecretsPath() (string, error) {
-	// First check if there's a config/.secrets in current working directory
-	cwd, err := os.Getwd()
-	if err == nil {
-		localPath := filepath.Join(cwd, "config", ".secrets")
-		if _, err := os.Stat(localPath); err == nil {
-			return localPath, nil
-		}
-	}
-
-	// Fall back to user config directory
 	dir, err := ConfigDir()
 	if err != nil {
 		return "", err

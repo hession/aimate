@@ -1,0 +1,14 @@
+# AIMate Configuration File
+# For more info: https://github.com/hession/aimate
+
+model:
+    api_key: test-api-key
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
+    temperature: 0.7
+    max_tokens: 4096
+memory:
+    db_path: /var/folders/hs/_gdlkz5103399k__h9vsyg0r0000gn/T/aimate-test3387362661/.aimate/memory.db
+    max_context_messages: 20
+safety:
+    confirm_dangerous_ops: true

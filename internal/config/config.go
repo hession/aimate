@@ -8,6 +8,34 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+var (
+	// configDir is the configuration directory path
+	// Can be set via SetConfigDir before loading config
+	configDir     string
+	configDirInit bool
+)
+
+// SetConfigDir sets a custom configuration directory
+// Must be called before any config loading functions
+func SetConfigDir(dir string) {
+	configDir = dir
+	configDirInit = true
+}
+
+// GetConfigDir returns the configuration directory
+// Priority: 1. Manually set via SetConfigDir, 2. ./config in current directory
+func GetConfigDir() string {
+	if !configDirInit {
+		// Default to ./config in current working directory
+		cwd, err := os.Getwd()
+		if err == nil {
+			configDir = filepath.Join(cwd, "config")
+		}
+		configDirInit = true
+	}
+	return configDir
+}
+
 // Config application configuration structure
 type Config struct {
 	Model  ModelConfig  `yaml:"model"`
@@ -58,11 +86,20 @@ func DefaultConfig() *Config {
 
 // ConfigDir returns the configuration directory path
 func ConfigDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get user home directory: %w", err)
+	dir := GetConfigDir()
+	if dir == "" {
+		return "", fmt.Errorf("failed to determine config directory")
 	}
-	return filepath.Join(homeDir, ".aimate"), nil
+	return dir, nil
+}
+
+// LogDir returns the log directory path
+func LogDir() string {
+	dir := GetConfigDir()
+	if dir == "" {
+		return "logs"
+	}
+	return filepath.Join(dir, "logs")
 }
 
 // ConfigPath returns the configuration file path
@@ -85,6 +122,15 @@ func Load() (*Config, error) {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Config file doesn't exist, create default config
 		cfg := DefaultConfig()
+
+		// Load secrets and merge API key
+		secrets, _ := LoadSecrets()
+		if secrets != nil {
+			if apiKey := secrets.GetDeepSeekAPIKey(); apiKey != "" {
+				cfg.Model.APIKey = apiKey
+			}
+		}
+
 		if err := Save(cfg); err != nil {
 			return nil, fmt.Errorf("failed to create default config: %w", err)
 		}
