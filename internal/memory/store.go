@@ -36,11 +36,13 @@ type Session struct {
 
 // Message message structure
 type Message struct {
-	ID        int64
-	SessionID string
-	Role      string // "user" | "assistant" | "system"
-	Content   string
-	CreatedAt time.Time
+	ID         int64
+	SessionID  string
+	Role       string // "user" | "assistant" | "system" | "tool"
+	Content    string
+	ToolCalls  string // JSON string of tool calls
+	ToolCallID string // For tool role
+	CreatedAt  time.Time
 }
 
 // Memory long-term memory structure

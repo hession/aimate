@@ -181,6 +181,17 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
 		}
 		messages = append(messages, assistantMsg)
 
+		// Save assistant message with tool calls
+		toolCallsJSON, _ := json.Marshal(resp.ToolCalls)
+		if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
+			SessionID: a.sessionID,
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: string(toolCallsJSON),
+		}); err != nil {
+			return "", fmt.Errorf("failed to save assistant tool call message: %w", err)
+		}
+
 		// Execute each tool call
 		for _, toolCall := range resp.ToolCalls {
 			result, toolErr := a.executeTool(toolCall)
@@ -204,19 +215,33 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
 				ToolCallID: toolCall.ID,
 			}
 			messages = append(messages, toolMsg)
+
+			// Save tool message
+			if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
+				SessionID:  a.sessionID,
+				Role:       "tool",
+				Content:    toolResultContent,
+				ToolCallID: toolCall.ID,
+			}); err != nil {
+				return "", fmt.Errorf("failed to save tool message: %w", err)
+			}
 		}
 	}
 
 	// Check if we need to save long-term memory
 	a.checkAndSaveMemory(userMessage, finalResponse)
 
-	// Save assistant response
-	if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
-		SessionID: a.sessionID,
-		Role:      "assistant",
-		Content:   finalResponse,
-	}); err != nil {
-		return "", fmt.Errorf("failed to save assistant message: %w", err)
+	// Save assistant response (only if it's not empty or different from the last tool call response)
+	// Note: If the loop finished naturally, finalResponse is set.
+	// If we broke out because of no tool calls, finalResponse is set.
+	if finalResponse != "" {
+		if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
+			SessionID: a.sessionID,
+			Role:      "assistant",
+			Content:   finalResponse,
+		}); err != nil {
+			return "", fmt.Errorf("failed to save assistant message: %w", err)
+		}
 	}
 
 	return finalResponse, nil
@@ -257,10 +282,22 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 		if msg.Role == "user" && msg.Content == userMessage {
 			continue
 		}
-		messages = append(messages, llm.Message{
-			Role:    msg.Role,
-			Content: msg.Content,
-		})
+
+		llmMsg := llm.Message{
+			Role:       msg.Role,
+			Content:    msg.Content,
+			ToolCallID: msg.ToolCallID,
+		}
+
+		// Parse tool calls if present
+		if msg.ToolCalls != "" {
+			var toolCalls []llm.ToolCall
+			if err := json.Unmarshal([]byte(msg.ToolCalls), &toolCalls); err == nil {
+				llmMsg.ToolCalls = toolCalls
+			}
+		}
+
+		messages = append(messages, llmMsg)
 	}
 
 	// Add current user message

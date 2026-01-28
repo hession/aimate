@@ -139,6 +139,61 @@ func TestSaveAndGetMessages(t *testing.T) {
 	}
 }
 
+func TestSaveAndGetToolMessages(t *testing.T) {
+	store, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	sessionID, _ := store.CreateSession()
+
+	// Save tool call message (assistant)
+	toolCalls := `[{"id":"call_123","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"test.txt\"}"}}]`
+	assistantMsg := &Message{
+		SessionID: sessionID,
+		Role:      "assistant",
+		Content:   "",
+		ToolCalls: toolCalls,
+	}
+	if err := store.SaveMessage(sessionID, assistantMsg); err != nil {
+		t.Fatalf("Failed to save assistant tool call message: %v", err)
+	}
+
+	// Save tool result message (tool)
+	toolMsg := &Message{
+		SessionID:  sessionID,
+		Role:       "tool",
+		Content:    "file content",
+		ToolCallID: "call_123",
+	}
+	if err := store.SaveMessage(sessionID, toolMsg); err != nil {
+		t.Fatalf("Failed to save tool message: %v", err)
+	}
+
+	// Get messages
+	retrieved, err := store.GetMessages(sessionID, 10)
+	if err != nil {
+		t.Fatalf("Failed to get messages: %v", err)
+	}
+	if len(retrieved) != 2 {
+		t.Errorf("Expected 2 messages, got %d", len(retrieved))
+	}
+
+	// Verify assistant message
+	if retrieved[0].Role != "assistant" {
+		t.Errorf("First message role mismatch: %s", retrieved[0].Role)
+	}
+	if retrieved[0].ToolCalls != toolCalls {
+		t.Errorf("ToolCalls mismatch: expected %s, got %s", toolCalls, retrieved[0].ToolCalls)
+	}
+
+	// Verify tool message
+	if retrieved[1].Role != "tool" {
+		t.Errorf("Second message role mismatch: %s", retrieved[1].Role)
+	}
+	if retrieved[1].ToolCallID != "call_123" {
+		t.Errorf("ToolCallID mismatch: expected call_123, got %s", retrieved[1].ToolCallID)
+	}
+}
+
 func TestSaveAndSearchMemories(t *testing.T) {
 	store, cleanup := setupTestDB(t)
 	defer cleanup()

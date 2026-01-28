@@ -57,6 +57,8 @@ func (s *SQLiteStore) initTables() error {
 			session_id TEXT NOT NULL,
 			role TEXT NOT NULL,
 			content TEXT NOT NULL,
+			tool_calls TEXT,
+			tool_call_id TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY (session_id) REFERENCES sessions(id)
 		)`,
@@ -77,6 +79,16 @@ func (s *SQLiteStore) initTables() error {
 		if _, err := s.db.Exec(query); err != nil {
 			return fmt.Errorf("failed to execute SQL: %s, error: %w", query, err)
 		}
+	}
+
+	// Try to add columns if they don't exist (simple migration)
+	migrationQueries := []string{
+		`ALTER TABLE messages ADD COLUMN tool_calls TEXT`,
+		`ALTER TABLE messages ADD COLUMN tool_call_id TEXT`,
+	}
+	for _, query := range migrationQueries {
+		// Ignore errors (e.g. duplicate column name)
+		_, _ = s.db.Exec(query)
 	}
 
 	return nil
@@ -148,8 +160,8 @@ func (s *SQLiteStore) UpdateSessionTime(id string) error {
 // SaveMessage saves a message
 func (s *SQLiteStore) SaveMessage(sessionID string, msg *Message) error {
 	result, err := s.db.Exec(
-		"INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-		sessionID, msg.Role, msg.Content, time.Now(),
+		"INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		sessionID, msg.Role, msg.Content, msg.ToolCalls, msg.ToolCallID, time.Now(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save message: %w", err)
@@ -170,7 +182,7 @@ func (s *SQLiteStore) SaveMessage(sessionID string, msg *Message) error {
 // GetMessages gets messages for a session
 func (s *SQLiteStore) GetMessages(sessionID string, limit int) ([]*Message, error) {
 	rows, err := s.db.Query(
-		`SELECT id, session_id, role, content, created_at 
+		`SELECT id, session_id, role, content, tool_calls, tool_call_id, created_at 
 		 FROM messages 
 		 WHERE session_id = ? 
 		 ORDER BY created_at DESC 
@@ -185,8 +197,15 @@ func (s *SQLiteStore) GetMessages(sessionID string, limit int) ([]*Message, erro
 	var messages []*Message
 	for rows.Next() {
 		var msg Message
-		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &msg.CreatedAt); err != nil {
+		var toolCalls, toolCallID sql.NullString
+		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &toolCalls, &toolCallID, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan message: %w", err)
+		}
+		if toolCalls.Valid {
+			msg.ToolCalls = toolCalls.String
+		}
+		if toolCallID.Valid {
+			msg.ToolCallID = toolCallID.String
 		}
 		messages = append(messages, &msg)
 	}
