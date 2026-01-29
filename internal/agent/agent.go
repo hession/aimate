@@ -283,6 +283,12 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 			continue
 		}
 
+		// Skip invalid assistant messages (no content and no tool_calls)
+		// This prevents "Invalid assistant message: content or tool_calls must be set" error
+		if msg.Role == "assistant" && msg.Content == "" && msg.ToolCalls == "" {
+			continue
+		}
+
 		llmMsg := llm.Message{
 			Role:       msg.Role,
 			Content:    msg.Content,
