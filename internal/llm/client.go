@@ -195,7 +195,7 @@ func (c *Client) handleStreamResponse(body io.Reader, handler StreamHandler) (*C
 	reader := bufio.NewReader(body)
 	var fullContent strings.Builder
 	var toolCalls []ToolCall
-	toolCallsMap := make(map[int]*ToolCall) // For merging streaming tool_calls
+	toolCallsMap := make(map[string]*ToolCall) // Use tool call ID as key for merging
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -241,21 +241,22 @@ func (c *Client) handleStreamResponse(body io.Reader, handler StreamHandler) (*C
 
 		// Handle tool_calls
 		for _, tc := range delta.ToolCalls {
-			idx := resp.Choices[0].Index
-			if existing, ok := toolCallsMap[idx]; ok {
-				// Append arguments
-				existing.Function.Arguments += tc.Function.Arguments
-			} else {
-				// New tool_call
-				newTC := ToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
-					Function: FunctionCall{
-						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					},
+			if tc.ID != "" {
+				if existing, ok := toolCallsMap[tc.ID]; ok {
+					// Append arguments to existing tool call
+					existing.Function.Arguments += tc.Function.Arguments
+				} else {
+					// New tool call
+					newTC := ToolCall{
+						ID:   tc.ID,
+						Type: tc.Type,
+						Function: FunctionCall{
+							Name:      tc.Function.Name,
+							Arguments: tc.Function.Arguments,
+						},
+					}
+					toolCallsMap[tc.ID] = &newTC
 				}
-				toolCallsMap[idx] = &newTC
 			}
 		}
 	}

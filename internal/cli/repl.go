@@ -3,14 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 
-	"github.com/chzyer/readline"
+	"github.com/c-bata/go-prompt"
 	"github.com/hession/aimate/internal/agent"
 	"github.com/hession/aimate/internal/config"
 	"github.com/hession/aimate/internal/llm"
@@ -20,14 +19,6 @@ import (
 
 const (
 	Version = "0.1.0"
-
-	colorReset  = "\033[0m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorBlue   = "\033[34m"
-	colorCyan   = "\033[36m"
-	colorRed    = "\033[31m"
-	colorGray   = "\033[90m"
 )
 
 // Run starts the CLI interactive interface
@@ -74,28 +65,20 @@ func Run(cfg *config.Config) error {
 
 // printWelcome prints welcome message
 func printWelcome() {
-	fmt.Printf("\n%s🤖 AIMate v%s%s - Your AI Work Companion\n", colorCyan, Version, colorReset)
-	fmt.Printf("%sType /help for help, /exit to quit%s\n", colorGray, colorReset)
-	fmt.Printf("%sFor multi-line input: enter text, then press Enter twice to submit%s\n\n", colorGray, colorReset)
+	fmt.Printf("\n🤖 AIMate v%s - Your AI Work Companion\n", Version)
+	fmt.Printf("Type /help for help, /exit to quit\n")
+	fmt.Printf("For multi-line input: enter text, then press Enter twice to submit\n\n")
 }
 
 // promptAPIKey prompts user to configure API Key
 func promptAPIKey(cfg *config.Config) error {
-	fmt.Printf("%s⚠️  API Key not configured%s\n\n", colorYellow, colorReset)
+	fmt.Printf("⚠️  API Key not configured\n\n")
 
-	// Create readline instance for API key input
-	rl, err := readline.New("Please enter your DeepSeek API Key: ")
-	if err != nil {
-		return fmt.Errorf("failed to create readline: %w", err)
-	}
-	defer rl.Close()
-
-	apiKey, err := rl.Readline()
-	if err != nil {
-		return fmt.Errorf("failed to read input: %w", err)
-	}
-
-	apiKey = strings.TrimSpace(apiKey)
+	// Use go-prompt for API key input
+	line := prompt.Input("Please enter your DeepSeek API Key: ", emptyCompleter,
+		prompt.OptionPrefixTextColor(prompt.Yellow),
+	)
+	apiKey := strings.TrimSpace(line)
 	if apiKey == "" {
 		return fmt.Errorf("API Key cannot be empty")
 	}
@@ -105,7 +88,7 @@ func promptAPIKey(cfg *config.Config) error {
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
-	fmt.Printf("\n%s✅ API Key saved%s\n\n", colorGreen, colorReset)
+	fmt.Printf("\n✅ API Key saved\n\n")
 
 	// Restart
 	return Run(cfg)
@@ -124,29 +107,27 @@ func getHistoryFilePath() string {
 	return filepath.Join(historyDir, "history")
 }
 
-// runREPL runs the interactive REPL with readline support
+// emptyCompleter provides no auto-completion
+func emptyCompleter(d prompt.Document) []prompt.Suggest {
+	return []prompt.Suggest{}
+}
+
+// commandCompleter provides auto-completion for built-in commands
+func commandCompleter(d prompt.Document) []prompt.Suggest {
+	s := []prompt.Suggest{
+		{Text: "/help", Description: "Show help message"},
+		{Text: "/clear", Description: "Clear current session history"},
+		{Text: "/new", Description: "Create new session"},
+		{Text: "/config", Description: "Show current configuration"},
+		{Text: "/history", Description: "Show history usage tips"},
+		{Text: "/exit", Description: "Exit program"},
+		{Text: "/quit", Description: "Exit program (alias)"},
+	}
+	return prompt.FilterHasPrefix(s, d.GetWordBeforeCursor(), true)
+}
+
+// runREPL runs the interactive REPL with go-prompt support
 func runREPL(ag *agent.Agent, cfg *config.Config) error {
-	// Configure readline
-	rlConfig := &readline.Config{
-		Prompt:          fmt.Sprintf("%sYou: %s", colorGreen, colorReset),
-		HistoryFile:     getHistoryFilePath(),
-		HistoryLimit:    1000,
-		InterruptPrompt: "^C",
-		EOFPrompt:       "exit",
-
-		// Enable VIM mode (optional, can be removed)
-		// VimMode:          false,
-
-		HistorySearchFold:      true,
-		DisableAutoSaveHistory: false,
-	}
-
-	rl, err := readline.NewEx(rlConfig)
-	if err != nil {
-		return fmt.Errorf("failed to create readline: %w", err)
-	}
-	defer rl.Close()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -155,9 +136,8 @@ func runREPL(ag *agent.Agent, cfg *config.Config) error {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		fmt.Printf("\n\n%sGoodbye! 👋%s\n", colorCyan, colorReset)
+		fmt.Printf("\n\nGoodbye! 👋\n")
 		cancel()
-		rl.Close()
 		os.Exit(0)
 	}()
 
@@ -167,33 +147,28 @@ func runREPL(ag *agent.Agent, cfg *config.Config) error {
 
 	for {
 		// Set prompt based on mode
+		var promptText string
+		var promptColor prompt.Color
+
 		if inMultiLine {
-			rl.SetPrompt(fmt.Sprintf("%s...  %s", colorGray, colorReset))
+			promptText = "...  "
+			promptColor = prompt.DarkGray
 		} else {
-			rl.SetPrompt(fmt.Sprintf("%sYou: %s", colorGreen, colorReset))
+			promptText = "You: "
+			promptColor = prompt.Green
 		}
 
-		// Read user input with readline (supports backspace, arrow keys, history)
-		line, err := rl.Readline()
-		if err != nil {
-			if err == readline.ErrInterrupt {
-				if inMultiLine {
-					// Cancel multi-line mode
-					multiLineBuffer.Reset()
-					inMultiLine = false
-					fmt.Println()
-					continue
-				}
-				// Ctrl+C pressed, ask for confirmation
-				fmt.Printf("\n%sPress Ctrl+C again or type /exit to quit%s\n", colorYellow, colorReset)
-				continue
-			}
-			if err == io.EOF {
-				fmt.Printf("\n%sGoodbye! 👋%s\n", colorCyan, colorReset)
-				return nil
-			}
-			return fmt.Errorf("failed to read input: %w", err)
-		}
+		// Use go-prompt for advanced input features
+		line := prompt.Input(promptText, commandCompleter,
+			prompt.OptionTitle("AIMate Interactive Prompt"),
+			prompt.OptionPrefixTextColor(promptColor),
+			prompt.OptionSuggestionTextColor(prompt.Blue),
+			prompt.OptionSelectedSuggestionBGColor(prompt.LightGray),
+			prompt.OptionSuggestionBGColor(prompt.DarkGray),
+			prompt.OptionSuggestionTextColor(prompt.White),
+			prompt.OptionDescriptionBGColor(prompt.Blue),
+			prompt.OptionDescriptionTextColor(prompt.White),
+		)
 
 		// Handle multi-line input
 		if inMultiLine {
@@ -225,19 +200,19 @@ func runREPL(ag *agent.Agent, cfg *config.Config) error {
 			continue
 		}
 
-		// Check if starting multi-line mode (ends with backslash or is a special command)
+		// Check if starting multi-line mode (ends with backslash)
 		if strings.HasSuffix(input, "\\") {
 			// Start multi-line mode
 			inMultiLine = true
 			multiLineBuffer.WriteString(strings.TrimSuffix(input, "\\"))
 			multiLineBuffer.WriteString("\n")
-			fmt.Printf("%s(Multi-line mode: press Enter twice to submit, Ctrl+C to cancel)%s\n", colorGray, colorReset)
+			fmt.Printf("(Multi-line mode: press Enter twice to submit, Ctrl+C to cancel)\n")
 			continue
 		}
 
 		// Handle built-in commands
 		if strings.HasPrefix(input, "/") {
-			if handleCommand(input, ag, rl) {
+			if handleCommand(input, ag) {
 				continue
 			}
 			return nil // /exit command
@@ -253,11 +228,11 @@ func runREPL(ag *agent.Agent, cfg *config.Config) error {
 // processInput processes user input and calls agent
 func processInput(ctx context.Context, ag *agent.Agent, input string) error {
 	// Call Agent to process
-	fmt.Printf("\n%sAIMate: %s", colorBlue, colorReset)
+	fmt.Printf("\nAIMate: ")
 
 	_, err := ag.Chat(ctx, input)
 	if err != nil {
-		fmt.Printf("\n%s❌ Error: %v%s\n", colorRed, err, colorReset)
+		fmt.Printf("\n❌ Error: %v\n", err)
 	}
 
 	fmt.Println()
@@ -266,7 +241,7 @@ func processInput(ctx context.Context, ag *agent.Agent, input string) error {
 }
 
 // handleCommand handles built-in commands, returns true to continue loop, false to exit
-func handleCommand(cmd string, ag *agent.Agent, rl *readline.Instance) bool {
+func handleCommand(cmd string, ag *agent.Agent) bool {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return true
@@ -281,20 +256,20 @@ func handleCommand(cmd string, ag *agent.Agent, rl *readline.Instance) bool {
 
 	case "/clear":
 		if err := ag.ClearSession(); err != nil {
-			fmt.Printf("%s❌ Failed to clear session: %v%s\n", colorRed, err, colorReset)
+			fmt.Printf("❌ Failed to clear session: %v\n", err)
 		} else {
-			fmt.Printf("%s✅ Session cleared%s\n", colorGreen, colorReset)
+			fmt.Printf("✅ Session cleared\n")
 		}
 		return true
 
 	case "/exit", "/quit", "/q":
-		fmt.Printf("%sGoodbye! 👋%s\n", colorCyan, colorReset)
+		fmt.Printf("Goodbye! 👋\n")
 		return false
 
 	case "/config":
 		cfg, err := config.Load()
 		if err != nil {
-			fmt.Printf("%s❌ Failed to load config: %v%s\n", colorRed, err, colorReset)
+			fmt.Printf("❌ Failed to load config: %v\n", err)
 		} else {
 			fmt.Println(cfg.String())
 		}
@@ -302,9 +277,9 @@ func handleCommand(cmd string, ag *agent.Agent, rl *readline.Instance) bool {
 
 	case "/new":
 		if err := ag.NewSession(); err != nil {
-			fmt.Printf("%s❌ Failed to create new session: %v%s\n", colorRed, err, colorReset)
+			fmt.Printf("❌ Failed to create new session: %v\n", err)
 		} else {
-			fmt.Printf("%s✅ New session created%s\n", colorGreen, colorReset)
+			fmt.Printf("✅ New session created\n")
 		}
 		return true
 
@@ -314,19 +289,19 @@ func handleCommand(cmd string, ag *agent.Agent, rl *readline.Instance) bool {
 			historyFile := getHistoryFilePath()
 			if historyFile != "" {
 				if err := os.WriteFile(historyFile, []byte{}, 0644); err != nil {
-					fmt.Printf("%s❌ Failed to clear history: %v%s\n", colorRed, err, colorReset)
+					fmt.Printf("❌ Failed to clear history: %v\n", err)
 				} else {
-					fmt.Printf("%s✅ Command history cleared%s\n", colorGreen, colorReset)
+					fmt.Printf("✅ Command history cleared\n")
 				}
 			}
 		} else {
-			fmt.Printf("%sUse Up/Down arrow keys to browse command history%s\n", colorGray, colorReset)
-			fmt.Printf("%sUse /history clear to clear history%s\n", colorGray, colorReset)
+			fmt.Printf("Use Up/Down arrow keys to browse command history\n")
+			fmt.Printf("Use /history clear to clear history\n")
 		}
 		return true
 
 	default:
-		fmt.Printf("%s❓ Unknown command: %s%s\n", colorYellow, cmd, colorReset)
+		fmt.Printf("❓ Unknown command: %s\n", cmd)
 		fmt.Println("Type /help for available commands")
 		return true
 	}
@@ -335,9 +310,9 @@ func handleCommand(cmd string, ag *agent.Agent, rl *readline.Instance) bool {
 // printHelp prints help information
 func printHelp() {
 	fmt.Printf(`
-%s📚 AIMate Help%s
+📚 AIMate Help
 
-%sBuilt-in Commands:%s
+Built-in Commands:
   /help           - Show this help message
   /clear          - Clear current session history
   /new            - Create new session
@@ -346,31 +321,33 @@ func printHelp() {
   /history clear  - Clear command history
   /exit           - Exit program
 
-%sInput Tips:%s
+Input Tips:
   • Use Backspace to delete characters
   • Use Left/Right arrow keys to move cursor
   • Use Up/Down arrow keys to browse command history
   • Use Ctrl+A/Ctrl+E to jump to start/end of line
   • Use Ctrl+W to delete word before cursor
   • Use Ctrl+U to delete line before cursor
-  • End line with \ for multi-line input
+  • Use Ctrl+K to delete line after cursor
+  • Use Tab for auto-completion
+  • End line with \\ for multi-line input
   • Press Enter twice to submit in multi-line mode
   • Press Ctrl+C to cancel current input
 
-%sAvailable Tools:%s
+Available Tools:
   • read_file    - Read file content
   • write_file   - Write file content
   • list_dir     - List directory content
   • run_command  - Execute shell command
   • search_files - Search file content
 
-%sExamples:%s
+Examples:
   "Show me the files in current directory"
   "Read the content of main.go"
   "Remember that my project uses Go"
   "Create a file hello.txt with content Hello World"
 
-`, colorCyan, colorReset, colorYellow, colorReset, colorYellow, colorReset, colorYellow, colorReset, colorYellow, colorReset)
+`)
 }
 
 // streamOutput handles stream output
@@ -380,18 +357,18 @@ func streamOutput(content string) {
 
 // toolCallOutput handles tool call output
 func toolCallOutput(name string, args map[string]any, result string, err error) {
-	fmt.Printf("\n\n%s🔧 Calling tool: %s%s\n", colorYellow, name, colorReset)
+	fmt.Printf("\n\n🔧 Calling tool: %s\n", name)
 
 	// Display arguments
 	if len(args) > 0 {
-		fmt.Printf("%s   Args: %v%s\n", colorGray, args, colorReset)
+		fmt.Printf("   Args: %v\n", args)
 	}
 
 	// Display status
 	if err != nil {
-		fmt.Printf("%s   Status: ❌ Failed - %v%s\n", colorRed, err, colorReset)
+		fmt.Printf("   Status: ❌ Failed - %v\n", err)
 	} else {
-		fmt.Printf("%s   Status: ✅ Done%s\n", colorGreen, colorReset)
+		fmt.Printf("   Status: ✅ Done\n")
 	}
 
 	fmt.Println()
@@ -399,20 +376,12 @@ func toolCallOutput(name string, args map[string]any, result string, err error) 
 
 // confirmDangerousOp confirms dangerous operation
 func confirmDangerousOp(command string) bool {
-	fmt.Printf("\n%s⚠️  Dangerous Operation Warning%s\n", colorRed, colorReset)
+	fmt.Printf("\n⚠️  Dangerous Operation Warning\n")
 	fmt.Printf("About to execute: %s\n", command)
 
-	rl, err := readline.New("Confirm execution? (y/N): ")
-	if err != nil {
-		return false
-	}
-	defer rl.Close()
-
-	input, err := rl.Readline()
-	if err != nil {
-		return false
-	}
-
+	input := prompt.Input("Confirm execution? (y/N): ", emptyCompleter,
+		prompt.OptionPrefixTextColor(prompt.Red),
+	)
 	input = strings.ToLower(strings.TrimSpace(input))
 	return input == "y" || input == "yes"
 }
