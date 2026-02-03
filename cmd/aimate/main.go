@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	version   = "0.1.0"
-	configDir string // Configuration directory flag
+	version    = "0.1.0"
+	configDir  string // Configuration directory flag
+	promptText string // Prompt text for one-shot mode
 )
 
 func main() {
@@ -57,6 +58,10 @@ It can:
 			logger.Info("Configuration loaded successfully")
 			logConfigInfo(cfg)
 
+			if promptText != "" {
+				return cli.RunPrompt(cfg, promptText)
+			}
+
 			// Start CLI
 			return cli.Run(cfg)
 		},
@@ -64,6 +69,7 @@ It can:
 
 	// Add persistent flags
 	rootCmd.PersistentFlags().StringVar(&configDir, "config-dir", "", "Configuration directory (default: ./config)")
+	rootCmd.PersistentFlags().StringVarP(&promptText, "prompt", "p", "", "Run in prompt mode with a single prompt string")
 
 	// config subcommand
 	configCmd := &cobra.Command{

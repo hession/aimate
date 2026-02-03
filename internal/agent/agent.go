@@ -277,7 +277,9 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 	}
 
 	// Convert history message format (exclude current message as it will be added at the end)
-	for _, msg := range historyMsgs {
+	expectedToolCalls := map[string]bool{}
+	for i := 0; i < len(historyMsgs); i++ {
+		msg := historyMsgs[i]
 		// Skip the just-saved user message
 		if msg.Role == "user" && msg.Content == userMessage {
 			continue
@@ -287,6 +289,75 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 		// This prevents "Invalid assistant message: content or tool_calls must be set" error
 		if msg.Role == "assistant" && msg.Content == "" && msg.ToolCalls == "" {
 			continue
+		}
+
+		// Validate assistant tool call blocks (must be followed by tool responses)
+		if msg.Role == "assistant" && msg.ToolCalls != "" {
+			var toolCalls []llm.ToolCall
+			if err := json.Unmarshal([]byte(msg.ToolCalls), &toolCalls); err != nil {
+				continue
+			}
+
+			required := make(map[string]bool)
+			for _, tc := range toolCalls {
+				required[tc.ID] = true
+			}
+
+			found := make(map[string]bool)
+			j := i + 1
+			for j < len(historyMsgs) && historyMsgs[j].Role == "tool" {
+				if historyMsgs[j].ToolCallID != "" {
+					found[historyMsgs[j].ToolCallID] = true
+				}
+				j++
+			}
+
+			complete := true
+			for id := range required {
+				if !found[id] {
+					complete = false
+					break
+				}
+			}
+
+			if !complete {
+				// Skip incomplete tool call block to avoid invalid history
+				i = j - 1
+				continue
+			}
+
+			llmMsg := llm.Message{
+				Role:      "assistant",
+				Content:   msg.Content,
+				ToolCalls: toolCalls,
+			}
+			messages = append(messages, llmMsg)
+
+			expectedToolCalls = required
+			continue
+		}
+
+		// Only include tool messages that match the last assistant tool_calls
+		if msg.Role == "tool" {
+			if len(expectedToolCalls) == 0 || msg.ToolCallID == "" {
+				continue
+			}
+			if !expectedToolCalls[msg.ToolCallID] {
+				continue
+			}
+
+			llmMsg := llm.Message{
+				Role:       "tool",
+				Content:    msg.Content,
+				ToolCallID: msg.ToolCallID,
+			}
+			messages = append(messages, llmMsg)
+			delete(expectedToolCalls, msg.ToolCallID)
+			continue
+		}
+
+		if len(expectedToolCalls) > 0 {
+			expectedToolCalls = map[string]bool{}
 		}
 
 		llmMsg := llm.Message{

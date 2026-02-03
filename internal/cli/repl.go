@@ -63,6 +63,56 @@ func Run(cfg *config.Config) error {
 	return runREPL(ag, cfg)
 }
 
+// RunPrompt runs in non-interactive prompt mode with a single prompt string
+func RunPrompt(cfg *config.Config, promptText string) error {
+	promptText = strings.TrimSpace(promptText)
+	if promptText == "" {
+		return fmt.Errorf("prompt is empty")
+	}
+
+	// Check API Key
+	if !cfg.IsAPIKeyConfigured() {
+		return fmt.Errorf("API Key not configured")
+	}
+
+	// Initialize components
+	llmClient := llm.New(
+		cfg.Model.APIKey,
+		cfg.Model.BaseURL,
+		cfg.Model.Model,
+		cfg.Model.Temperature,
+		cfg.Model.MaxTokens,
+	)
+
+	// Use in-memory store for prompt mode to avoid persisting sessions/history
+	memStore, err := memory.NewSQLiteStore(":memory:")
+	if err != nil {
+		return fmt.Errorf("failed to initialize memory store: %w", err)
+	}
+	defer memStore.Close()
+
+	// Create tool registry (disable dangerous ops in prompt mode)
+	registry := tools.NewDefaultRegistry(func(string) bool {
+		return false
+	})
+
+	// Create Agent
+	ag, err := agent.New(
+		cfg, llmClient, memStore, registry,
+		agent.WithStreamHandler(streamOutput),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to initialize Agent: %w", err)
+	}
+
+	if _, err := ag.Chat(context.Background(), promptText); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	return nil
+}
+
 // printWelcome prints welcome message
 func printWelcome() {
 	fmt.Printf("\n🤖 AIMate v%s - Your AI Work Companion\n", Version)

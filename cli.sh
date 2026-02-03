@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # AIMate CLI Runner Script
-# Usage: ./cli.sh [options] [-- aimate args]
+# Usage: ./cli.sh [options] [aimate args]
 #   -b, --build     Build before run
 #   -d, --debug     Run with debug logging
 #   -c, --config    Specify config directory
@@ -55,7 +55,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo -e "${CYAN}AIMate CLI Runner Script${NC}"
             echo ""
-            echo "Usage: ./cli.sh [options] [-- aimate args]"
+            echo "Usage: ./cli.sh [options] [aimate args]"
             echo ""
             echo "Options:"
             echo "  -b, --build     Build before run"
@@ -70,7 +70,8 @@ while [[ $# -gt 0 ]]; do
             echo "  ./cli.sh -b -e              # Build and run binary"
             echo "  ./cli.sh -d                 # Run with debug mode"
             echo "  ./cli.sh -c ./myconfig      # Use custom config directory"
-            echo "  ./cli.sh -- --help          # Pass args to aimate"
+            echo "  ./cli.sh -- --help          # Pass args to aimate (optional --)"
+            echo "  ./cli.sh -p \"你好\"          # Prompt mode with a quoted string"
             exit 0
             ;;
         --)
