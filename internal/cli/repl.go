@@ -13,7 +13,6 @@ import (
 	"github.com/hession/aimate/internal/agent"
 	"github.com/hession/aimate/internal/config"
 	"github.com/hession/aimate/internal/llm"
-	"github.com/hession/aimate/internal/memory"
 	"github.com/hession/aimate/internal/tools"
 )
 
@@ -40,18 +39,26 @@ func Run(cfg *config.Config) error {
 		cfg.Model.MaxTokens,
 	)
 
-	memStore, err := memory.NewSQLiteStore(cfg.Memory.DBPath)
+	// Initialize memory v2
+	memV2, err := agent.NewMemoryV2Integration(nil, cfg.Model.APIKey)
 	if err != nil {
-		return fmt.Errorf("failed to initialize memory store: %w", err)
+		return fmt.Errorf("failed to initialize memory v2: %w", err)
 	}
-	defer memStore.Close()
+	defer memV2.Close()
+
+	// Set project path
+	cwd, _ := os.Getwd()
+	if err := memV2.SetProject(cwd); err != nil {
+		// Non-fatal: log warning but continue
+		fmt.Printf("Warning: failed to set project path: %v\n", err)
+	}
 
 	// Create tool registry
 	registry := tools.NewDefaultRegistry(confirmDangerousOp)
 
 	// Create Agent
 	ag, err := agent.New(
-		cfg, llmClient, memStore, registry,
+		cfg, llmClient, memV2, registry,
 		agent.WithStreamHandler(streamOutput),
 		agent.WithToolCallHandler(toolCallOutput),
 	)
@@ -84,12 +91,12 @@ func RunPrompt(cfg *config.Config, promptText string) error {
 		cfg.Model.MaxTokens,
 	)
 
-	// Use in-memory store for prompt mode to avoid persisting sessions/history
-	memStore, err := memory.NewSQLiteStore(":memory:")
+	// Use in-memory mode for prompt mode - v2 will use temporary storage
+	memV2, err := agent.NewMemoryV2Integration(nil, cfg.Model.APIKey)
 	if err != nil {
-		return fmt.Errorf("failed to initialize memory store: %w", err)
+		return fmt.Errorf("failed to initialize memory v2: %w", err)
 	}
-	defer memStore.Close()
+	defer memV2.Close()
 
 	// Create tool registry (disable dangerous ops in prompt mode)
 	registry := tools.NewDefaultRegistry(func(string) bool {
@@ -98,7 +105,7 @@ func RunPrompt(cfg *config.Config, promptText string) error {
 
 	// Create Agent
 	ag, err := agent.New(
-		cfg, llmClient, memStore, registry,
+		cfg, llmClient, memV2, registry,
 		agent.WithStreamHandler(streamOutput),
 	)
 	if err != nil {
@@ -170,6 +177,14 @@ func commandCompleter(d prompt.Document) []prompt.Suggest {
 		{Text: "/new", Description: "Create new session"},
 		{Text: "/config", Description: "Show current configuration"},
 		{Text: "/history", Description: "Show history usage tips"},
+		{Text: "/session", Description: "Show session status"},
+		{Text: "/session list", Description: "List recent sessions"},
+		{Text: "/session restore", Description: "Restore a session"},
+		{Text: "/memory", Description: "Show memory statistics"},
+		{Text: "/memory search", Description: "Search memories"},
+		{Text: "/memory core", Description: "List core memories"},
+		{Text: "/memory recent", Description: "Show recent memories"},
+		{Text: "/memory diagnose", Description: "Diagnose memory system"},
 		{Text: "/exit", Description: "Exit program"},
 		{Text: "/quit", Description: "Exit program (alias)"},
 	}
@@ -299,6 +314,17 @@ func handleCommand(cmd string, ag *agent.Agent) bool {
 
 	command := strings.ToLower(parts[0])
 
+	// Check v2 memory commands first
+	memV2 := ag.GetMemoryV2()
+	if memV2 != nil {
+		memCommands := NewMemoryV2Commands(memV2.GetMemorySystem())
+		handled, output := memCommands.HandleCommand(cmd)
+		if handled {
+			fmt.Println(output)
+			return true
+		}
+	}
+
 	switch command {
 	case "/help":
 		printHelp()
@@ -322,14 +348,6 @@ func handleCommand(cmd string, ag *agent.Agent) bool {
 			fmt.Printf("❌ Failed to load config: %v\n", err)
 		} else {
 			fmt.Println(cfg.String())
-		}
-		return true
-
-	case "/new":
-		if err := ag.NewSession(); err != nil {
-			fmt.Printf("❌ Failed to create new session: %v\n", err)
-		} else {
-			fmt.Printf("✅ New session created\n")
 		}
 		return true
 
@@ -370,6 +388,21 @@ Built-in Commands:
   /history        - Show history usage tips
   /history clear  - Clear command history
   /exit           - Exit program
+
+Session Commands:
+  /session        - Show current session status
+  /session list   - List recent sessions
+  /session restore <id> - Restore a session
+
+Memory Commands:
+  /memory         - Show memory statistics
+  /memory search <keyword> - Search memories
+  /memory core    - List core memories
+  /memory recent  - Show recent short-term memories
+  /memory diagnose - Diagnose memory system
+  /memory sync    - Sync index
+  /memory reindex - Rebuild index
+  /memory maintenance - Run maintenance tasks
 
 Input Tips:
   • Use Backspace to delete characters

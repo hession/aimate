@@ -8,7 +8,7 @@ import (
 
 	"github.com/hession/aimate/internal/config"
 	"github.com/hession/aimate/internal/llm"
-	"github.com/hession/aimate/internal/memory"
+	v2 "github.com/hession/aimate/internal/memory/v2"
 	"github.com/hession/aimate/internal/tools"
 )
 
@@ -22,9 +22,8 @@ type Agent struct {
 	config          *config.Config
 	promptConfig    *config.PromptConfig
 	llm             *llm.Client
-	memory          memory.Store
+	memoryV2        *MemoryV2Integration
 	registry        *tools.Registry
-	sessionID       string
 	maxContextMsgs  int
 	streamHandler   func(content string)
 	toolCallHandler func(name string, args map[string]any, result string, err error)
@@ -48,7 +47,7 @@ func WithToolCallHandler(handler func(name string, args map[string]any, result s
 }
 
 // New creates a new Agent instance
-func New(cfg *config.Config, llmClient *llm.Client, mem memory.Store, reg *tools.Registry, opts ...Option) (*Agent, error) {
+func New(cfg *config.Config, llmClient *llm.Client, memV2 *MemoryV2Integration, reg *tools.Registry, opts ...Option) (*Agent, error) {
 	// Load prompt configuration
 	promptCfg, err := config.LoadPromptConfig()
 	if err != nil {
@@ -59,7 +58,7 @@ func New(cfg *config.Config, llmClient *llm.Client, mem memory.Store, reg *tools
 		config:         cfg,
 		promptConfig:   promptCfg,
 		llm:            llmClient,
-		memory:         mem,
+		memoryV2:       memV2,
 		registry:       reg,
 		maxContextMsgs: cfg.Memory.MaxContextMessages,
 	}
@@ -69,63 +68,40 @@ func New(cfg *config.Config, llmClient *llm.Client, mem memory.Store, reg *tools
 		opt(agent)
 	}
 
-	// Initialize session
-	if err := agent.initSession(); err != nil {
-		return nil, err
+	// Load or create session (v2 handles this internally)
+	if err := agent.memoryV2.GetMemorySystem().Session().LoadLatestSession(); err != nil {
+		// If loading fails, create a new session
+		if _, err := agent.memoryV2.NewSession(); err != nil {
+			return nil, fmt.Errorf("failed to initialize session: %w", err)
+		}
 	}
 
 	return agent, nil
 }
 
-// initSession initializes the session
-func (a *Agent) initSession() error {
-	// Try to get the latest session
-	session, err := a.memory.GetLatestSession()
-	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
-	}
-
-	if session != nil {
-		a.sessionID = session.ID
-		return nil
-	}
-
-	// Create new session
-	sessionID, err := a.memory.CreateSession()
-	if err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
-	}
-
-	a.sessionID = sessionID
-	return nil
-}
-
 // NewSession creates a new session
 func (a *Agent) NewSession() error {
-	sessionID, err := a.memory.CreateSession()
+	_, err := a.memoryV2.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
-	a.sessionID = sessionID
 	return nil
 }
 
 // ClearSession clears the current session
 func (a *Agent) ClearSession() error {
-	if err := a.memory.ClearSession(a.sessionID); err != nil {
+	// Clear messages in current session
+	if err := a.memoryV2.GetMemorySystem().Session().ClearMessages(); err != nil {
 		return err
 	}
-	return a.NewSession()
+	return nil
 }
 
 // Chat processes user message and returns response
 func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
-	// Save user message
-	if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
-		SessionID: a.sessionID,
-		Role:      "user",
-		Content:   userMessage,
-	}); err != nil {
+	// Save user message to v2 session
+	tokenCount := EstimateTokens(userMessage)
+	if err := a.memoryV2.AddConversation("user", userMessage, tokenCount); err != nil {
 		return "", fmt.Errorf("failed to save user message: %w", err)
 	}
 
@@ -181,14 +157,12 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
 		}
 		messages = append(messages, assistantMsg)
 
-		// Save assistant message with tool calls
+		// Save assistant message with tool calls to v2 session
 		toolCallsJSON, _ := json.Marshal(resp.ToolCalls)
-		if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
-			SessionID: a.sessionID,
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: string(toolCallsJSON),
-		}); err != nil {
+		assistantTokens := EstimateTokens(resp.Content) + EstimateTokens(string(toolCallsJSON))
+		if err := a.memoryV2.GetMemorySystem().Session().AddToolMessage(
+			string(toolCallsJSON), "", resp.Content, assistantTokens,
+		); err != nil {
 			return "", fmt.Errorf("failed to save assistant tool call message: %w", err)
 		}
 
@@ -216,30 +190,23 @@ func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
 			}
 			messages = append(messages, toolMsg)
 
-			// Save tool message
-			if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
-				SessionID:  a.sessionID,
-				Role:       "tool",
-				Content:    toolResultContent,
-				ToolCallID: toolCall.ID,
-			}); err != nil {
+			// Save tool message to v2 session
+			toolTokens := EstimateTokens(toolResultContent)
+			if err := a.memoryV2.GetMemorySystem().Session().AddToolMessage(
+				"", toolCall.ID, toolResultContent, toolTokens,
+			); err != nil {
 				return "", fmt.Errorf("failed to save tool message: %w", err)
 			}
 		}
 	}
 
 	// Check if we need to save long-term memory
-	a.checkAndSaveMemory(userMessage, finalResponse)
+	a.checkAndSaveMemory(ctx, userMessage, finalResponse)
 
-	// Save assistant response (only if it's not empty or different from the last tool call response)
-	// Note: If the loop finished naturally, finalResponse is set.
-	// If we broke out because of no tool calls, finalResponse is set.
+	// Save assistant response (only if it's not empty)
 	if finalResponse != "" {
-		if err := a.memory.SaveMessage(a.sessionID, &memory.Message{
-			SessionID: a.sessionID,
-			Role:      "assistant",
-			Content:   finalResponse,
-		}); err != nil {
+		assistantTokens := EstimateTokens(finalResponse)
+		if err := a.memoryV2.AddConversation("assistant", finalResponse, assistantTokens); err != nil {
 			return "", fmt.Errorf("failed to save assistant message: %w", err)
 		}
 	}
@@ -257,7 +224,7 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 	}
 
 	// Load relevant long-term memories
-	memories, err := a.searchRelevantMemories(userMessage)
+	memories, err := a.searchRelevantMemories(context.Background(), userMessage)
 	if err == nil && len(memories) > 0 {
 		var memoryContent strings.Builder
 		memoryContent.WriteString(a.promptConfig.GetMemoryContext() + "\n")
@@ -270,10 +237,12 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 		})
 	}
 
-	// Load history messages
-	historyMsgs, err := a.memory.GetMessages(a.sessionID, a.maxContextMsgs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get history messages: %w", err)
+	// Load history messages from v2 session
+	historyMsgs := a.memoryV2.GetMemorySystem().Session().GetMessages()
+
+	// Limit to maxContextMsgs if needed
+	if len(historyMsgs) > a.maxContextMsgs && a.maxContextMsgs > 0 {
+		historyMsgs = historyMsgs[len(historyMsgs)-a.maxContextMsgs:]
 	}
 
 	// Convert history message format (exclude current message as it will be added at the end)
@@ -286,7 +255,6 @@ func (a *Agent) buildMessages(userMessage string) ([]llm.Message, error) {
 		}
 
 		// Skip invalid assistant messages (no content and no tool_calls)
-		// This prevents "Invalid assistant message: content or tool_calls must be set" error
 		if msg.Role == "assistant" && msg.Content == "" && msg.ToolCalls == "" {
 			continue
 		}
@@ -396,120 +364,32 @@ func (a *Agent) executeTool(toolCall llm.ToolCall) (string, error) {
 	return a.registry.Execute(toolCall.Function.Name, args)
 }
 
-// searchRelevantMemories searches for relevant memories
-func (a *Agent) searchRelevantMemories(userMessage string) ([]*memory.Memory, error) {
-	// Simple keyword extraction (can be optimized later)
-	keywords := extractKeywords(userMessage)
-	if len(keywords) == 0 {
-		return nil, nil
+// searchRelevantMemories searches for relevant memories using v2
+func (a *Agent) searchRelevantMemories(ctx context.Context, userMessage string) ([]*v2.Memory, error) {
+	// Use v2 semantic search
+	memories, err := a.memoryV2.SearchMemories(ctx, userMessage, 5)
+	if err != nil {
+		return nil, err
 	}
-
-	var allMemories []*memory.Memory
-	seen := make(map[int64]bool)
-
-	for _, keyword := range keywords {
-		memories, err := a.memory.SearchMemories(keyword, 5)
-		if err != nil {
-			continue
-		}
-		for _, mem := range memories {
-			if !seen[mem.ID] {
-				seen[mem.ID] = true
-				allMemories = append(allMemories, mem)
-			}
-		}
-	}
-
-	// Limit return count
-	if len(allMemories) > 5 {
-		allMemories = allMemories[:5]
-	}
-
-	return allMemories, nil
+	return memories, nil
 }
 
-// checkAndSaveMemory checks if we need to save long-term memory
-func (a *Agent) checkAndSaveMemory(userMessage, response string) {
-	lowerMsg := strings.ToLower(userMessage)
-
-	// Detect "remember" intent
-	memoryTriggers := []string{"记住", "记下", "remember", "记一下", "帮我记"}
-	for _, trigger := range memoryTriggers {
-		if strings.Contains(lowerMsg, trigger) {
-			// Extract content to remember
-			content := extractMemoryContent(userMessage)
-			if content != "" {
-				keywords := extractKeywords(content)
-				_ = a.memory.SaveMemory(content, keywords)
-			}
-			break
-		}
-	}
-}
-
-// extractKeywords extracts keywords (simple implementation)
-func extractKeywords(text string) []string {
-	// Remove common stop words, extract meaningful words
-	stopWords := map[string]bool{
-		"的": true, "是": true, "在": true, "我": true, "你": true,
-		"他": true, "她": true, "它": true, "这": true, "那": true,
-		"有": true, "和": true, "与": true, "或": true, "但": true,
-		"the": true, "a": true, "an": true, "is": true, "are": true,
-		"was": true, "were": true, "be": true, "been": true, "being": true,
-		"have": true, "has": true, "had": true, "do": true, "does": true,
-		"did": true, "will": true, "would": true, "could": true, "should": true,
-		"may": true, "might": true, "must": true, "can": true,
-	}
-
-	// Simple tokenization
-	words := strings.FieldsFunc(text, func(r rune) bool {
-		return r == ' ' || r == ',' || r == '.' || r == '?' || r == '!' ||
-			r == '：' || r == '，' || r == '。' || r == '？' || r == '！'
-	})
-
-	var keywords []string
-	for _, word := range words {
-		word = strings.ToLower(strings.TrimSpace(word))
-		if len(word) > 1 && !stopWords[word] {
-			keywords = append(keywords, word)
-		}
-	}
-
-	// Limit keyword count
-	if len(keywords) > 10 {
-		keywords = keywords[:10]
-	}
-
-	return keywords
-}
-
-// extractMemoryContent extracts content to remember
-func extractMemoryContent(userMessage string) string {
-	// Try to extract content after "remember"
-	triggers := []string{"记住", "记下", "remember", "记一下", "帮我记"}
-	lowerMsg := strings.ToLower(userMessage)
-
-	for _, trigger := range triggers {
-		if idx := strings.Index(lowerMsg, trigger); idx != -1 {
-			// Extract content after trigger word
-			content := userMessage[idx+len(trigger):]
-			content = strings.TrimSpace(content)
-			// Remove common prefixes
-			content = strings.TrimPrefix(content, "：")
-			content = strings.TrimPrefix(content, ":")
-			content = strings.TrimPrefix(content, "，")
-			content = strings.TrimPrefix(content, ",")
-			content = strings.TrimSpace(content)
-			if content != "" {
-				return content
-			}
-		}
-	}
-
-	return userMessage
+// checkAndSaveMemory checks if we need to save long-term memory using v2
+func (a *Agent) checkAndSaveMemory(ctx context.Context, userMessage, response string) {
+	// Use v2 automatic classification and storage
+	_, _ = a.memoryV2.ProcessUserMessage(ctx, userMessage)
 }
 
 // SessionID returns the current session ID
 func (a *Agent) SessionID() string {
-	return a.sessionID
+	sess := a.memoryV2.GetMemorySystem().Session().GetCurrentSession()
+	if sess != nil {
+		return sess.ID
+	}
+	return ""
+}
+
+// GetMemoryV2 returns the v2 memory integration
+func (a *Agent) GetMemoryV2() *MemoryV2Integration {
+	return a.memoryV2
 }
