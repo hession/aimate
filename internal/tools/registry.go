@@ -3,6 +3,8 @@ package tools
 import (
 	"fmt"
 	"sync"
+
+	"github.com/hession/aimate/internal/config"
 )
 
 // Registry tool registry
@@ -123,7 +125,7 @@ func buildParameterSchema(params []ParameterDef) map[string]interface{} {
 }
 
 // NewDefaultRegistry creates and registers all default tools
-func NewDefaultRegistry(confirmFunc func(command string) bool) *Registry {
+func NewDefaultRegistry(confirmFunc func(command string) bool, cfg *config.Config) *Registry {
 	registry := NewRegistry()
 
 	// Register all built-in tools
@@ -133,6 +135,8 @@ func NewDefaultRegistry(confirmFunc func(command string) bool) *Registry {
 		NewListDirTool(),
 		NewRunCommandTool(confirmFunc),
 		NewSearchFilesTool(),
+		NewWebSearchTool(cfg),
+		NewFetchURLTool(cfg),
 	}
 
 	for _, tool := range tools {

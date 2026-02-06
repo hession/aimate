@@ -133,4 +133,20 @@ func logConfigInfo(cfg *config.Config) {
 	logger.Info("  Memory.DBPath: %s", cfg.Memory.DBPath)
 	logger.Info("  Memory.MaxContextMessages: %d", cfg.Memory.MaxContextMessages)
 	logger.Info("  Safety.ConfirmDangerousOps: %v", cfg.Safety.ConfirmDangerousOps)
+	logger.Info("  WebSearch.Provider: %s", cfg.WebSearch.Provider)
+	logger.Info("  WebSearch.BaseURL: %s", cfg.WebSearch.BaseURL)
+	logger.Info("  WebSearch.APIKey: %s", redactAPIKey(cfg.WebSearch.APIKey))
+	logger.Info("  WebSearch.TimeoutSeconds: %d", cfg.WebSearch.TimeoutSeconds)
+	logger.Info("  WebSearch.DefaultLimit: %d", cfg.WebSearch.DefaultLimit)
+	logger.Info("  WebSearch.UserAgent: %s", cfg.WebSearch.UserAgent)
+}
+
+func redactAPIKey(value string) string {
+	if value == "" {
+		return "(not configured)"
+	}
+	if len(value) > 8 {
+		return value[:8] + "..."
+	}
+	return "***"
 }

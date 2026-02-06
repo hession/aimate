@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -38,9 +39,10 @@ func GetConfigDir() string {
 
 // Config application configuration structure
 type Config struct {
-	Model  ModelConfig  `yaml:"model"`
-	Memory MemoryConfig `yaml:"memory"`
-	Safety SafetyConfig `yaml:"safety"`
+	Model     ModelConfig     `yaml:"model"`
+	Memory    MemoryConfig    `yaml:"memory"`
+	Safety    SafetyConfig    `yaml:"safety"`
+	WebSearch WebSearchConfig `yaml:"web_search"`
 }
 
 // ModelConfig LLM model configuration
@@ -63,6 +65,16 @@ type SafetyConfig struct {
 	ConfirmDangerousOps bool `yaml:"confirm_dangerous_ops"`
 }
 
+// WebSearchConfig web search configuration
+type WebSearchConfig struct {
+	Provider       string `yaml:"provider"`
+	BaseURL        string `yaml:"base_url"`
+	APIKey         string `yaml:"api_key"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	DefaultLimit   int    `yaml:"default_limit"`
+	UserAgent      string `yaml:"user_agent"`
+}
+
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
@@ -80,6 +92,14 @@ func DefaultConfig() *Config {
 		},
 		Safety: SafetyConfig{
 			ConfirmDangerousOps: true,
+		},
+		WebSearch: WebSearchConfig{
+			Provider:       "duckduckgo",
+			BaseURL:        "https://api.duckduckgo.com",
+			APIKey:         "",
+			TimeoutSeconds: 15,
+			DefaultLimit:   5,
+			UserAgent:      "AIMate/0.1",
 		},
 	}
 }
@@ -129,6 +149,9 @@ func Load() (*Config, error) {
 			if apiKey := secrets.GetDeepSeekAPIKey(); apiKey != "" {
 				cfg.Model.APIKey = apiKey
 			}
+			if webKey := secrets.GetWebSearchAPIKey(); webKey != "" {
+				cfg.WebSearch.APIKey = webKey
+			}
 		}
 
 		if err := Save(cfg); err != nil {
@@ -151,9 +174,16 @@ func Load() (*Config, error) {
 
 	// Load secrets and merge API key if not set in config
 	secrets, _ := LoadSecrets()
-	if cfg.Model.APIKey == "" && secrets != nil {
-		if apiKey := secrets.GetDeepSeekAPIKey(); apiKey != "" {
-			cfg.Model.APIKey = apiKey
+	if secrets != nil {
+		if cfg.Model.APIKey == "" {
+			if apiKey := secrets.GetDeepSeekAPIKey(); apiKey != "" {
+				cfg.Model.APIKey = apiKey
+			}
+		}
+		if cfg.WebSearch.APIKey == "" {
+			if webKey := secrets.GetWebSearchAPIKey(); webKey != "" {
+				cfg.WebSearch.APIKey = webKey
+			}
 		}
 	}
 
@@ -219,6 +249,21 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config error: memory.max_context_messages must be greater than 0")
 	}
 
+	// Validate web search config
+	provider := strings.ToLower(strings.TrimSpace(c.WebSearch.Provider))
+	if provider == "" {
+		provider = "duckduckgo"
+	}
+	if provider == "searxng" && strings.TrimSpace(c.WebSearch.BaseURL) == "" {
+		return fmt.Errorf("config error: web_search.base_url cannot be empty for searxng provider")
+	}
+	if c.WebSearch.TimeoutSeconds <= 0 {
+		return fmt.Errorf("config error: web_search.timeout_seconds must be greater than 0")
+	}
+	if c.WebSearch.DefaultLimit <= 0 {
+		return fmt.Errorf("config error: web_search.default_limit must be greater than 0")
+	}
+
 	return nil
 }
 
@@ -249,7 +294,14 @@ func (c *Config) String() string {
     DB Path: %s
     Max Context Messages: %d
   Safety:
-    Confirm Dangerous Ops: %v`,
+    Confirm Dangerous Ops: %v
+  Web Search:
+    Provider: %s
+    Base URL: %s
+    API Key: %s
+    Timeout Seconds: %d
+    Default Limit: %d
+    User Agent: %s`,
 		apiKeyDisplay,
 		c.Model.BaseURL,
 		c.Model.Model,
@@ -258,5 +310,21 @@ func (c *Config) String() string {
 		c.Memory.DBPath,
 		c.Memory.MaxContextMessages,
 		c.Safety.ConfirmDangerousOps,
+		c.WebSearch.Provider,
+		c.WebSearch.BaseURL,
+		redactAPIKey(c.WebSearch.APIKey),
+		c.WebSearch.TimeoutSeconds,
+		c.WebSearch.DefaultLimit,
+		c.WebSearch.UserAgent,
 	)
+}
+
+func redactAPIKey(value string) string {
+	if value == "" {
+		return "(not configured)"
+	}
+	if len(value) > 8 {
+		return value[:8] + "..."
+	}
+	return "***"
 }

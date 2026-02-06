@@ -214,11 +214,11 @@ func TestRunCommandTool(t *testing.T) {
 }
 
 func TestGetSchemas(t *testing.T) {
-	registry := NewDefaultRegistry(nil)
+	registry := NewDefaultRegistry(nil, nil)
 	schemas := registry.GetSchemas()
 
-	if len(schemas) != 5 {
-		t.Errorf("Expected 5 tool schemas, got %d", len(schemas))
+	if len(schemas) != 7 {
+		t.Errorf("Expected 7 tool schemas, got %d", len(schemas))
 	}
 
 	// Verify schema format

@@ -21,6 +21,10 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("Expected MaxContextMessages to be 20, got %d", cfg.Memory.MaxContextMessages)
 	}
 
+	if cfg.WebSearch.Provider != "duckduckgo" {
+		t.Errorf("Expected WebSearch provider to be duckduckgo, got %s", cfg.WebSearch.Provider)
+	}
+
 	if !cfg.Safety.ConfirmDangerousOps {
 		t.Error("Expected ConfirmDangerousOps to be true")
 	}
@@ -50,6 +54,13 @@ func TestConfigValidate(t *testing.T) {
 					DBPath:             "/tmp/test.db",
 					MaxContextMessages: 20,
 				},
+				WebSearch: WebSearchConfig{
+					Provider:       "duckduckgo",
+					BaseURL:        "https://api.duckduckgo.com",
+					TimeoutSeconds: 15,
+					DefaultLimit:   5,
+					UserAgent:      "AIMate/0.1",
+				},
 			},
 			wantErr: true,
 		},
@@ -65,6 +76,13 @@ func TestConfigValidate(t *testing.T) {
 				Memory: MemoryConfig{
 					DBPath:             "/tmp/test.db",
 					MaxContextMessages: 20,
+				},
+				WebSearch: WebSearchConfig{
+					Provider:       "duckduckgo",
+					BaseURL:        "https://api.duckduckgo.com",
+					TimeoutSeconds: 15,
+					DefaultLimit:   5,
+					UserAgent:      "AIMate/0.1",
 				},
 			},
 			wantErr: true,

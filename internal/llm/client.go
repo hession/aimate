@@ -33,6 +33,7 @@ type Message struct {
 // ToolCall tool call structure
 type ToolCall struct {
 	ID       string       `json:"id"`
+	Index    *int         `json:"index,omitempty"`
 	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
 }
@@ -241,23 +242,46 @@ func (c *Client) handleStreamResponse(body io.Reader, handler StreamHandler) (*C
 
 		// Handle tool_calls
 		for _, tc := range delta.ToolCalls {
-			if tc.ID != "" {
-				if existing, ok := toolCallsMap[tc.ID]; ok {
-					// Append arguments to existing tool call
-					existing.Function.Arguments += tc.Function.Arguments
-				} else {
-					// New tool call
-					newTC := ToolCall{
-						ID:   tc.ID,
-						Type: tc.Type,
-						Function: FunctionCall{
-							Name:      tc.Function.Name,
-							Arguments: tc.Function.Arguments,
-						},
-					}
-					toolCallsMap[tc.ID] = &newTC
-				}
+			key := ""
+			if tc.Index != nil {
+				key = fmt.Sprintf("idx_%d", *tc.Index)
+			} else if tc.ID != "" {
+				key = tc.ID
 			}
+			if key == "" {
+				continue
+			}
+
+			if existing, ok := toolCallsMap[key]; ok {
+				if existing.Type == "" && tc.Type != "" {
+					existing.Type = tc.Type
+				}
+				if existing.Function.Name == "" && tc.Function.Name != "" {
+					existing.Function.Name = tc.Function.Name
+				}
+				existing.Function.Arguments += tc.Function.Arguments
+				if existing.ID == "" && tc.ID != "" {
+					existing.ID = tc.ID
+				}
+				if existing.Index == nil && tc.Index != nil {
+					existing.Index = tc.Index
+				}
+				continue
+			}
+
+			newTC := ToolCall{
+				ID:    tc.ID,
+				Index: tc.Index,
+				Type:  tc.Type,
+				Function: FunctionCall{
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				},
+			}
+			if newTC.ID == "" && tc.Index != nil {
+				newTC.ID = fmt.Sprintf("idx_%d", *tc.Index)
+			}
+			toolCallsMap[key] = &newTC
 		}
 	}
 

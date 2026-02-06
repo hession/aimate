@@ -54,7 +54,7 @@ func Run(cfg *config.Config) error {
 	}
 
 	// Create tool registry
-	registry := tools.NewDefaultRegistry(confirmDangerousOp)
+	registry := tools.NewDefaultRegistry(confirmDangerousOp, cfg)
 
 	// Create Agent
 	ag, err := agent.New(
@@ -101,7 +101,7 @@ func RunPrompt(cfg *config.Config, promptText string) error {
 	// Create tool registry (disable dangerous ops in prompt mode)
 	registry := tools.NewDefaultRegistry(func(string) bool {
 		return false
-	})
+	}, cfg)
 
 	// Create Agent
 	ag, err := agent.New(
@@ -423,6 +423,8 @@ Available Tools:
   • list_dir     - List directory content
   • run_command  - Execute shell command
   • search_files - Search file content
+  • search_web   - Search the web for fresh information
+  • fetch_url    - Fetch a URL for readable content
 
 Examples:
   "Show me the files in current directory"

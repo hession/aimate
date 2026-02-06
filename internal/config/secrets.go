@@ -102,3 +102,8 @@ func (s *Secrets) Has(key string) bool {
 func (s *Secrets) GetDeepSeekAPIKey() string {
 	return s.Get("DEEPSEEK_API_KEY")
 }
+
+// GetWebSearchAPIKey returns the Web Search API key from secrets
+func (s *Secrets) GetWebSearchAPIKey() string {
+	return s.Get("WEB_SEARCH_API_KEY")
+}
