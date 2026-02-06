@@ -59,6 +59,16 @@ model:
   model: "deepseek-chat"
   temperature: 0.7
   max_tokens: 4096
+
+
+# Web search configuration
+web_search:
+  provider: "duckduckgo"       # duckduckgo | searxng
+  base_url: "https://api.duckduckgo.com"
+  api_key: ""                  # optional, used by searxng instances
+  timeout_seconds: 15
+  default_limit: 5
+  user_agent: "AIMate/0.1"
 ```
 
 ### 2. Start Chatting
@@ -168,6 +178,8 @@ Features:
 | `list_dir` | List directory content |
 | `run_command` | Execute shell command |
 | `search_files` | Search file content |
+| `search_web` | Search the web for fresh information |
+| `fetch_url` | Fetch a URL for readable content |
 
 ## 💡 Usage Examples
 
